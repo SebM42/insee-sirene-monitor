@@ -3,7 +3,7 @@ from botocore.config import Config
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from utils.config import R2_SCOPE, INSEE_API_SCOPE
+from utils.config import INSEE_API_SCOPE
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -26,3 +26,10 @@ def get_insee_api_key(dbutils) -> str:
         scope=INSEE_API_SCOPE,
         key="api_key"
     )
+
+def configure_spark_for_r2(spark, client) -> None:
+    """Configure Spark session to access Cloudflare R2 via s3a."""
+    spark.conf.set("fs.s3a.endpoint", client.meta.endpoint_url)
+    spark.conf.set("fs.s3a.access.key", client._request_signer._credentials.access_key)
+    spark.conf.set("fs.s3a.secret.key", client._request_signer._credentials.secret_key)
+    spark.conf.set("fs.s3a.path.style.access", "true")

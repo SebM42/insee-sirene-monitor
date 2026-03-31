@@ -1,69 +1,72 @@
 import json
+import os
 from datetime import datetime, timezone
-from utils.config import BUCKET, PIPELINE_STATE_KEY, BATCH_STAGE_KEY
+from utils.config import PIPELINE_STATE_PATH, BATCH_STAGE_PATH,STATE_PATH
 
 
-def get_pipeline_state(client) -> dict:
-    """Retrieve pipeline state from R2. Initializes default state if not found."""
-    try:
-        response = client.get_object(Bucket=BUCKET, Key=PIPELINE_STATE_KEY)
-        return json.loads(response["Body"].read().decode("utf-8"))
-    except client.exceptions.NoSuchKey:
-        reset_pipeline_halt(client)
-        return get_pipeline_state(client)
+
+def _read(path: str) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    with open(path, "r") as f:
+        return json.load(f)
 
 
-def is_pipeline_halted(client) -> bool:
-    """Check if pipeline is halted."""
-    return get_pipeline_state(client)["pipeline_halted"]
+def _write(path: str, payload: dict) -> None:
+    with open(path, "wb") as f:
+        f.write(json.dumps(payload).encode("utf-8"))
 
 
-def set_pipeline_halted(client, reason: str) -> None:
-    """Set pipeline halted flag with reason."""
-    payload = {
+def get_pipeline_state() -> dict:
+    state = _read(PIPELINE_STATE_PATH)
+    if state is None:
+        reset_pipeline_halt()
+        return get_pipeline_state()
+    return state
+
+
+def is_pipeline_halted() -> bool:
+    return get_pipeline_state()["pipeline_halted"]
+
+
+def set_pipeline_halted(reason: str) -> None:
+    _write(PIPELINE_STATE_PATH, {
         "pipeline_halted": True,
         "halted_since": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "halted_reason": reason
-    }
-    client.put_object(
-        Bucket=BUCKET,
-        Key=PIPELINE_STATE_KEY,
-        Body=json.dumps(payload).encode("utf-8")
-    )
+        "halted_reason": reason,
+        "insee_delta_cursor": get_pipeline_state().get("insee_delta_cursor")
+    })
 
 
-def reset_pipeline_halt(client) -> None:
-    """Reset pipeline halted flag."""
-    payload = {
+def reset_pipeline_halt() -> None:
+    os.makedirs(STATE_PATH, exist_ok=True)
+    insee_delta_cursor  = get_pipeline_state().get("insee_delta_cursor") if os.path.exists(PIPELINE_STATE_PATH) else None
+    _write(PIPELINE_STATE_PATH, {
         "pipeline_halted": False,
         "halted_since": None,
-        "halted_reason": None
-    }
-    client.put_object(
-        Bucket=BUCKET,
-        Key=PIPELINE_STATE_KEY,
-        Body=json.dumps(payload).encode("utf-8")
-    )
+        "halted_reason": None,
+        "insee_delta_cursor ": insee_delta_cursor
+    })
 
 
-def set_batch_stage(client, batch_date: str, stage: str) -> None:
-    """Record current processing stage for a batch."""
-    payload = {
+def set_insee_delta_cursor (date: str) -> None:
+    state = get_pipeline_state()
+    state["insee_delta_cursor"] = date
+    _write(PIPELINE_STATE_PATH, state)
+    print(f"New insee delta cursor set : {date}")
+
+
+def get_insee_delta_cursor () -> str | None:
+    return get_pipeline_state().get("insee_delta_cursor")
+
+
+def set_batch_stage(batch_date: str, stage: str) -> None:
+    _write(BATCH_STAGE_PATH, {
         "batch_date": batch_date,
         "stage": stage,
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    }
-    client.put_object(
-        Bucket=BUCKET,
-        Key=BATCH_STAGE_KEY,
-        Body=json.dumps(payload).encode("utf-8")
-    )
+    })
 
 
-def get_batch_stage(client) -> dict | None:
-    """Retrieve current batch processing stage from R2."""
-    try:
-        response = client.get_object(Bucket=BUCKET, Key=BATCH_STAGE_KEY)
-        return json.loads(response["Body"].read().decode("utf-8"))
-    except client.exceptions.NoSuchKey:
-        return None
+def get_batch_stage() -> dict | None:
+    return _read(BATCH_STAGE_PATH)

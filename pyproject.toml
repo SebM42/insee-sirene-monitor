@@ -14,4 +14,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["ingestion*", "transform*", "utils*"]
+include = ["ingestion*", "transform*", "utils*", "jobs*"]

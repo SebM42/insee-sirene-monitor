@@ -102,11 +102,18 @@ def to_silver_schema(sdf_base, sdf_history, batch_date: str):
     # colonnes non historisées à récupérer depuis le stock
     non_hist_cols = ["siret"] + NON_HISTORIZED_COLS + ["dateCreationEtablissement", "dateDernierTraitementEtablissement"]
 
+    # cap date — on ne peut pas avoir de dates supérieures à max(dateDernierTraitementEtablissement)
+    max_date = sdf_base.agg(F.max("dateDernierTraitementEtablissement")).collect()[0][0]
+    max_date_lit = F.lit(max_date).cast("date")
+
     # sirets à période unique — depuis le stock directement
     sdf_single = sdf_base.filter(F.col("nombrePeriodesEtablissement").cast("int") == 1) \
         .select(
             "siret",
-            F.greatest(F.col("dateDebut"), F.col("dateDernierTraitementEtablissement")).alias("start_at"),
+            F.least(
+                F.greatest(F.col("dateDebut").cast("date"), F.col("dateDernierTraitementEtablissement").cast("date")),
+                max_date_lit
+            ).alias("start_at"),
             F.lit(None).cast("date").alias("end_at"),
             "dateCreationEtablissement",
             *HISTORIZED_COLS,
@@ -120,8 +127,8 @@ def to_silver_schema(sdf_base, sdf_history, batch_date: str):
     sdf_multi = sdf_history.join(sdf_non_hist, on="siret", how="inner") \
         .select(
             "siret",
-            F.col("dateDebut").alias("start_at"),
-            F.col("dateFin").alias("end_at"),
+            F.least(F.col("dateDebut").cast("date"), max_date_lit).alias("start_at"),
+            F.when(F.col("dateFin").isNotNull(), F.least(F.col("dateFin").cast("date"), max_date_lit)).otherwise(F.lit(None).cast("date")).alias("end_at"),
             "dateCreationEtablissement",
             *HISTORIZED_COLS,
             *NON_HISTORIZED_COLS,

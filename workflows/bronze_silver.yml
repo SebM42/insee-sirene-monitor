@@ -1,0 +1,11 @@
+name: bronze-silver
+tasks:
+  - task_key: bronze_to_silver
+    python_file: jobs/job_bronze_to_silver.py
+    retry_on_timeout: true
+    max_retries: 3
+    min_retry_interval_millis: 30000  # 30s
+    timeout_seconds: 3600
+    email_notifications:
+      on_failure:
+        - "{{secrets/databricks-credentials/alert-email}}"

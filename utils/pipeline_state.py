@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
-from utils.config import PIPELINE_STATE_PATH, BATCH_STAGE_PATH,STATE_PATH
+from utils.config import PIPELINE_STATE_PATH, STATE_PATH
 
 
 
@@ -34,18 +34,18 @@ def set_pipeline_halted(reason: str) -> None:
         "pipeline_halted": True,
         "halted_since": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "halted_reason": reason,
-        "insee_delta_cursor": get_pipeline_state().get("insee_delta_cursor")
+        "insee_delta_cursor": get_insee_delta_cursor()
     })
 
 
 def reset_pipeline_halt() -> None:
     os.makedirs(STATE_PATH, exist_ok=True)
-    insee_delta_cursor  = get_pipeline_state().get("insee_delta_cursor") if os.path.exists(PIPELINE_STATE_PATH) else None
+    insee_delta_cursor  = get_insee_delta_cursor()
     _write(PIPELINE_STATE_PATH, {
         "pipeline_halted": False,
         "halted_since": None,
         "halted_reason": None,
-        "insee_delta_cursor ": insee_delta_cursor
+        "insee_delta_cursor": insee_delta_cursor
     })
 
 
@@ -58,15 +58,3 @@ def set_insee_delta_cursor (date: str) -> None:
 
 def get_insee_delta_cursor () -> str | None:
     return get_pipeline_state().get("insee_delta_cursor")
-
-
-def set_batch_stage(batch_date: str, stage: str) -> None:
-    _write(BATCH_STAGE_PATH, {
-        "batch_date": batch_date,
-        "stage": stage,
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    })
-
-
-def get_batch_stage() -> dict | None:
-    return _read(BATCH_STAGE_PATH)

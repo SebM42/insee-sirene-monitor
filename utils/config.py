@@ -2,6 +2,7 @@ from pyspark.sql.types import StructType, StructField, StringType, BooleanType, 
 
 DATABRICKS_SCOPE = "databricks-credentials"
 BRONZE_SILVER_WORKFLOW_ID = 0
+SILVER_GOLD_WORKFLOW_ID = 0
 
 INSEE_API_SCOPE = "insee-sirene-monitor-api-credentials"
 INSEE_API_ENDPOINT = "https://api.insee.fr/api-sirene/3.11/siret"
@@ -20,7 +21,6 @@ STOCK_FILTERED_HISTORY_PARQUET_DIR = f"/Volumes/{VOLUME_STOCK.replace('.','/')}/
 
 STATE_PATH = f"/Volumes/{VOLUME_STATE.replace('.','/')}/"
 PIPELINE_STATE_PATH = f"{STATE_PATH}pipeline_state.json"
-BATCH_STAGE_PATH = f"{STATE_PATH}batch_stage.json"
 
 BRONZE_STAGING_DIR = f"/Volumes/{VOLUME_BRONZE_STAGING.replace('.','/')}"
 
@@ -193,6 +193,13 @@ PROJECT_HISTORIZED_COLS = [
     name for name, col in SIRENE_COLUMNS.items() 
     if col["project_historized"] is True
 ]
+PROJECT_ONLY_HISTORIZED_COLS = [name for name, col in SIRENE_COLUMNS.items() 
+                                  if col["insee_historized"] is False 
+                                  and col["project_historized"] is True]
+FIXED_COLS = [name for name, col in SIRENE_COLUMNS.items() 
+              if col["project_historized"] is False 
+              and col["source"] is True 
+              and name != "siret"]
 SILVER_COLS = [
     name for name, col in SIRENE_COLUMNS.items() 
     if col["project_historized"] is not None

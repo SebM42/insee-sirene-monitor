@@ -23,6 +23,12 @@ def fetch_paginated(api_key: str, q: str, output_path: str, endlog: str) -> None
             headers={"X-INSEE-Api-Key-Integration": api_key},
             params={"q": q, "nombre": 1000, "debut": debut}
         )
+        if response.status_code == 429:
+            reset_ts = int(response.headers["X-Rate-Limit-Reset"]) / 1000
+            sleep_time = max(0, reset_ts - time.time()) + 1
+            print(f"429 Too Many Requests, sleeping {sleep_time:.1f}s...", flush=True)
+            time.sleep(sleep_time)
+            continue  # retry la même requête sans incrémenter debut
         response.raise_for_status()
         data = response.json()
         total = data["header"]["total"]
@@ -51,6 +57,14 @@ def fetch_dept_in_time_range(api_key: str, start: str, end: str, output_path: st
         headers={"X-INSEE-Api-Key-Integration": api_key},
         params={"q": q, "nombre": 1}
     )
+
+    if response.status_code == 429:
+        reset_ts = int(response.headers["X-Rate-Limit-Reset"]) / 1000
+        sleep_time = max(0, reset_ts - time.time()) + 1
+        print(f"429 Too Many Requests, sleeping {sleep_time:.1f}s...", flush=True)
+        time.sleep(sleep_time)
+        return fetch_dept_in_time_range(api_key, start, end, output_path, dept)  # retry récursif
+
     data = response.json()
     if data["header"]["statut"] == 404 and data["header"]["message"].startswith("Aucun élément trouvé"):
         print(f"No results found, skipping.", flush=True)

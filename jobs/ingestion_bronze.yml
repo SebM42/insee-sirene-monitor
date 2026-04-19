@@ -1,12 +1,20 @@
-# workflows/ingestion_bronze.yml
 name: ingestion-bronze
 schedule:
   quartz_cron_expression: "0 0 10 * * ?"  # 10th of each month at midnight
   timezone_id: "Europe/Paris"
 
+environments:
+  - environment_key: default
+    spec:
+      client: "1"
+      dependencies:
+        - "{{secrets/databricks-credentials/project-path}}"
+
 tasks:
   - task_key: ingestion_short
-    python_file: jobs/ingestion.py
+    environment_key: default
+    spark_python_task:
+      python_file: tasks/task_ingestion.py
     retry_on_timeout: true
     max_retries: 10
     min_retry_interval_millis: 30000  # 30s
@@ -18,12 +26,14 @@ tasks:
   - task_key: ingestion_long
     depends_on:
       - task_key: ingestion_short
-        outcome: FAILED
-    python_file: jobs/ingestion.py
+    run_if: AT_LEAST_ONE_FAILED
+    environment_key: default
+    spark_python_task:
+      python_file: tasks/task_ingestion.py
     retry_on_timeout: true
-    max_retries: -1  # unlimited
-    min_retry_interval_millis: 3600000  # 1h
-    timeout_seconds: 0  # no timeout
+    max_retries: -1
+    min_retry_interval_millis: 3600000
+    timeout_seconds: 0
     email_notifications:
       on_failure:
         - "{{secrets/databricks-credentials/alert-email}}"

@@ -7,11 +7,12 @@ name = "insee-sirene-monitor"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "boto3",
     "pyarrow",
     "requests",
-    "python-dotenv"
+    "python-dotenv",
+    "dbt-databricks",
+    "databricks-sdk"
 ]
 
 [tool.setuptools.packages.find]
-include = ["ingestion*", "transform*", "utils*", "jobs*"]
+include = ["ingestion*", "transform*", "utils*", "tasks*"]

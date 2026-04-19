@@ -40,53 +40,69 @@ were possible to keep the lakehouse up to date each month.
 
 **Key figures**  
 - 42.9M establishments in France in the full stock file (as of March 2026)
-- 4.5M establishments in Auvergne-Rhône-Alpes (~10.5%)
+- 5M establishments in Auvergne-Rhône-Alpes (~11.6%)
 - 1.7M active establishments in AURA
 - ~36,500 monthly modifications in AURA via the SIRENE delta API
 
 **Decision**  
 Hybrid ingestion:
-- One-shot initialization from the full stock file (CSV zip), 
-  configured via a config file pointing to the source URL
-- Monthly updates via the SIRENE API, filtering on 
-  dateDernierTraitementEtablissement >= last successful run date
-- The stock file last modification date is used as the last successful run date for the first API delta call
+- One-shot initialization from two source files:
+  - The full stock file (CSV zip) — current state of all establishments
+  - The historical stock file (CSV zip) — all historical periods for establishments with more than one recorded period
+  - Both files are downloaded from data.gouv.fr stable URLs pointing to the latest published version
+- Monthly updates via the SIRENE API, filtering on the date of last treatment by INSEE, offset by one second from the last successful run
+
+**Why two source files for initialization**  
+The stock file only contains the current state of each establishment — 
+one row per siret, no historical periods. The historical stock file 
+provides all past periods for establishments that have had more than 
+one state. Combining both files allows reconstructing a complete SCD2 
+Silver table from the pipeline's launch date, covering the full 
+historical record available from INSEE at initialization time.
+
+**Date capping at initialization**  
+INSEE may record periods with future start or end dates (e.g. anticipated 
+nomenclature changes). To prevent future period boundaries in Silver 
+that would cause inconsistencies during monthly batch processing, all 
+dates are capped at the maximum last treatment date found in the stock 
+file during initialization. This value represents the maximum known 
+temporal boundary at that point in time.
 
 **Reasons**  
-- Full monthly reload = reprocessing 4.5M rows every run
+- Full monthly reload = reprocessing 5M rows every run
 - Incremental ingestion = reprocessing ~36,500 rows every run
-- Ratio: 123x less data processed per monthly run
+- Ratio: 137x less data processed per monthly run
 - The SIRENE API provides a precise filter on last modification date
   — no need to diff files to detect changes
-- The stock file URL changes every month — a config file pointing 
-  to the source URL is the simplest pragmatic solution at this stage
+- The stock file URLs on data.gouv.fr always point to the latest 
+  published version — no manual URL configuration required
 
 **Alternatives considered**  
 - Full monthly reload from stock file: simpler to implement, no pipeline 
-  state management needed — rejected because 123x less efficient
+  state management needed — rejected because 137x less efficient
 - Stock file initialization via API pagination: technically possible 
-  but counterproductive — the API paginates results, making full stock 
-  retrieval significantly more complex and slower than directly 
-  downloading the stock file
+  but counterproductive — over 3M sirets with multiple periods would 
+  require thousands of paginated API calls, significantly slower and 
+  more complex than directly downloading the historical stock file
 
-**Known limitation & improvement axis**  
-The stock file URL is configured manually. Pointing to an older file 
-is not blocking — the first pipeline run will simply capture more months 
-of delta than usual, but can become counterproductive if the source file is deprecated for a long time.
-This limitation is marginal in practice and only 
-relevant in two scenarios: pipeline reinitialization after a major logic 
-change, or project duplication with a different business logic.
-A future improvement would be to auto-detect the latest stock file URL 
-via scraping of the data.gouv dataset page.
+**Known limitation**  
+The delta cursor is based on the date of last treatment by INSEE, which 
+can be updated for both business changes and purely technical modifications 
+with no business impact. This may cause unnecessary batch processing of 
+establishments that have not meaningfully changed. The significance filter 
+applied during Silver transformation mitigates this — only changes on 
+tracked columns trigger a new Silver period.
 
 **Design implication**  
-The pipeline has a start date — historical analysis can only go back
+The pipeline has a start date — historical analysis can only go back 
 to the first batch. This makes early pipeline launch strategically important.
 
-**Pipeline state management — enabling precise API delta filtering**  
-The pipeline maintains execution state to determine the reference date 
-for each API delta call — ensuring only changes since the last 
-successful run are retrieved. Full rationale in ADR-00X.
+**Pipeline state management**  
+The pipeline maintains a delta cursor in a JSON state file stored on a 
+Unity Catalog Volume. This file also holds the circuit breaker flag 
+(see ADR-006). The cursor is updated at the end of each successful 
+monthly batch — ensuring only changes since the last successful run 
+are retrieved on the next call.
 
 ## ADR-003 — Bronze → Silver → Gold architecture
 
@@ -126,7 +142,7 @@ transformed into Silver, it is deleted from Bronze — it has no long-term
 storage role and no analytical value that Silver cannot already provide.
 
 **Layers**  
-- Bronze — transit zone: Delta Lake table, append-only, partitioned by `batch_id`
+- Bronze — transit zone: Delta Lake table, append-only, partitioned by `batch_date`
 - Silver — historical source of truth: SCD Type 2 table accumulating monthly state snapshots since pipeline launch
 - Gold — business aggregations: set of dbt models producing sector/region trend indicators for business consumption
 
@@ -140,10 +156,11 @@ Delta Lake is compatible with the project's actual constraints, rather than
 justifying the choice from scratch.
 
 **Constraints to validate**  
-- **ACID transactions** : the SCD Type 2 transformation requires an UPDATE 
-  (close existing record) followed by an INSERT (new state). If the pipeline 
-  fails between the two, Silver is corrupted. Each individual statement must 
-  be fully committed or fully rolled back.
+- **ACID transactions** : the SCD Type 2 transformation requires closing 
+  an existing record and inserting a new state in a single atomic operation. 
+  If the operation is only partially applied, Silver is corrupted. 
+  The entire transformation must be fully committed or fully rolled back 
+  as one unit.
 - **Columnar format** : Silver → Gold transformations are aggregation-heavy 
   (sector/region counts over time) — columnar storage maximizes query 
   performance for this access pattern.
@@ -170,125 +187,144 @@ volumes involved (~36,500 rows per monthly batch). Versioning retention
 is kept at default (30 days) as the marginal storage cost does not 
 justify configuration overhead.
 
-## ADR-005 — Cloudflare R2 as primary storage
+## ADR-005 — Unity Catalog Volumes as primary storage
 
 **Context**  
-An S3-compatible object storage accessible from Databricks was needed 
-to host three distinct components:
+A storage layer accessible from both Python and Spark was needed to host:
 - The Bronze transit layer (temporary batch holding between API ingestion 
   and Silver transformation)
-- The Delta Lake medallion layers (Silver + Gold)
-- The pipeline config file (stock file URL for initialization)
+- Intermediate files during first_fetch initialization (stock files, 
+  filtered Parquet exports)
+- The pipeline state file (delta cursor and circuit breaker flag)
 
 **Decision**  
-Cloudflare R2 as the primary storage for the project.
-
-**Storage capacity validation**  
-- Bronze transit layer: ~10 Mo max per batch, deleted once successfully 
-  transformed into Silver — at monthly frequency, accumulation to a 
-  critical storage level within any reasonable timeframe is not a concern
-- Silver init (1.7M active AURA establishments): ~300 Mo
-- Silver monthly delta (~36,500 rows SCD Type 2): ~10 Mo/month
-- Gold (sector/region aggregations): ~20 Mo
-- Delta Lake versioning (30 days retention): ~20 Mo
-- Total after 12 months: ~450-500 Mo — well within R2 10 GB free tier
+Unity Catalog Volumes as the primary storage layer for all non-Delta 
+files. Delta Lake tables (Silver, Gold, Bronze) are stored in the 
+Unity Catalog managed storage.
 
 **Reasons**  
-- Natively S3-compatible API — boto3 works without any code modification
-- 10 GB free tier with no time limit — no expiration unlike AWS 
-  free tier (6 months maximum)
-- No egress fees — relevant for frequent reads from Databricks
+- Unity Catalog Volumes are natively accessible from both Python 
+  (standard file I/O) and Spark — no credentials or connector 
+  configuration required
+- No external dependency — everything lives within the Databricks 
+  workspace, reducing operational complexity
+- Free Edition provides sufficient capacity for the project's storage 
+  requirements (validated empirically — see capacity validation below)
+
+**Storage capacity validation**  
+- Filtered AURA stock file (Parquet): ~350 Mo — deleted after first_fetch
+- Historical stock file (Parquet, filtered): deleted after first_fetch
+- Silver table: ~211 Mo at initialization (11M rows, SCD2)
+- Silver monthly delta: ~10 Mo/month
+- Gold tables: ~20 Mo
+- Bronze transit: ~10 Mo max per batch, deleted once transformed
+- Pipeline state file: negligible
+- Total after 12 months: ~450-500 Mo — well within Free Edition limits
 
 **Alternatives considered**  
-- AWS S3: rejected — free tier limited to 6 months, account expired
-- Azure Blob Storage: rejected — requires the Azure SDK rather than 
-  boto3, adding an unnecessary dependency given R2's native S3 
-  compatibility. Additionally, Azure Blob charges egress fees 
-  and its free tier is time-limited (12 months), both disadvantages 
-  compared to R2.
-- DBFS (Databricks File System): rejected — tight coupling to Databricks, 
-  not representative of a real-world architecture
+- Cloudflare R2 (original choice): rejected after discovering that 
+  Databricks Serverless Free Edition does not support External Locations 
+  with access key / secret key credentials — only IAM role-based 
+  authentication is supported, which is AWS-specific and incompatible 
+  with R2
+- AWS S3: rejected — free tier limited to 6 months
+- DBFS (Databricks File System): rejected — deprecated in favor of 
+  Unity Catalog Volumes, tight coupling to Databricks internal 
+  implementation details
 
-## ADR-006 — Pipeline failure handling strategy  
+**Note**  
+The original architecture (ADR-005 v1) was designed around Cloudflare R2. 
+The switch to Unity Catalog Volumes was driven by a platform constraint 
+discovered during implementation, not by a design preference. 
+The decision to use an external object store remains architecturally 
+valid for non-Serverless deployments or production-grade setups 
+where storage isolation from the compute platform is a requirement.
+
+## ADR-006 — Pipeline failure handling strategy
 
 **Context**  
 A failure handling strategy was needed across the entire pipeline to ensure:
 - No batch is ever lost between ingestion and Silver transformation
-- The pipeline recovers automatically from transient failures at every stage
+- The pipeline recovers automatically from transient failures at the ingestion stage
 - Logic failures are caught, isolated, and resolved without data loss 
   or Silver corruption
-
-Additionally, the pipeline must be able to detect and act on a human 
-signal indicating a logic fix has been applied, without requiring 
-direct access to Databricks nor R2.
+- The pipeline can be resumed after a human-triggered fix, without 
+  requiring direct access to Databricks
 
 **Failure handling by pipeline stage**  
 
 *API → Bronze (ingestion)*  
-- **Transient failure** (API or R2 down): handled by native Databricks 
-  retry with incremental delay. If max retries reached, the run is 
+- **Transient failure** (API down, network issue): handled by native 
+  Databricks two-phase retry. If max retries reached, the run is 
   marked as failed and an alert is sent. The batch is not written to 
   Bronze — the next scheduled run will capture the missed changes via 
   the delta API filter, at the cost of a larger delta window.
-- **Logic failure** (unexpected API response structure): Schema evolution 
-  is enforced at the Bronze level — any schema change from the INSEE API 
-  is accepted and written to Bronze as-is. This guarantees no batch is 
-  ever lost due to a schema change. If the new schema breaks the Silver 
-  transformation, the DLQ handles it downstream.
-- **Idempotence**: guaranteed by a MERGE on the Bronze macrobatch table — 
-  replaying an ingestion produces no duplicates.
+- **Logic failure or unexpected failure**: the job exits with an alert. 
+  Bronze is not written — no data loss risk at this stage since the 
+  API remains queryable on the next run.
 
 *Bronze → Silver (transformation)*  
-- **Transient failure** (R2 down, instance crash): handled by native 
-  Databricks retry. Idempotence of the transformation guarantees safe 
-  accidental reprocessing.
-- **Logic failure** (e.g. schema evolution in Bronze breaking Silver 
-  transformation logic): the batch is sent to the DLQ. A circuit breaker 
-  halts the pipeline — no subsequent batch is processed until the failing 
-  batch is resolved. The circuit breaker is reset exclusively by a human 
-  operator without requiring direct access to Databricks or the storage 
-  layer — the reset is triggered from the version control system once 
-  the fix has been pushed.
-- **Idempotence**: guaranteed by an idempotence condition on the Silver 
-  transformation sequence — accidental reprocessing of an already-transformed 
-  batch produces no duplicate or corrupted records (see ADR-T).
+- **No transient failure**: all operations at this stage are performed 
+  within Unity Catalog (Delta Lake reads, writes, and deletes) — 
+  no external dependency exists that could cause a transient failure.
+- **Logic failure or unexpected failure**: a circuit breaker halts 
+  the pipeline. The failing batch remains in Bronze, which acts as 
+  the dead letter queue — no batch is ever deleted from Bronze unless 
+  its Silver transformation has been verified as successful. The circuit 
+  breaker is reset exclusively by a human operator via a GitHub Actions 
+  manual trigger once the fix has been deployed (see ADR-007).
+- **Atomicity**: the Silver transformation is performed as a single 
+  atomic Delta MERGE — the full state change for all affected 
+  establishments in a batch is committed in one operation. There is 
+  no intermediate state where Silver is partially updated. If the MERGE 
+  fails, Silver is unchanged.
+- **Idempotence**: guaranteed by the MERGE semantics — replaying a 
+  batch produces the same result regardless of how many times it is run.
 - **Ordering guarantee**: when a batch fails, all subsequent batches 
   are queued — none are processed until the failing batch is resolved. 
   This enforces strict chronological ordering of Silver SCD Type 2 
-  snapshots, which is a hard requirement for month-over-month trend 
-  analysis (see ADR-003).
+  records, which is a hard requirement for trend analysis.
 
 *Silver → Gold (dbt)*  
-- **Transient failure** (R2 down, instance crash): handled by native 
-  Databricks retry, no manual intervention required.
-- **Logic failure** (broken or updated dbt model): non-destructive and 
-  non-blocking — Silver is intact, other Gold tables are unaffected. 
-  A fix or update to Gold transformation files triggers an automatic 
-  recalculation, with no direct access to Databricks required.
-- **Idempotence**: naturally guaranteed by the nature of dbt aggregation 
-  models — replaying a dbt run always produces the same result.
+- **No transient failure**: all operations at this stage run within 
+  Unity Catalog — no external dependency.
+- **dbt model failure**: the failing Gold tables are rolled back to 
+  their previous version via Delta time travel. Silver is untouched. 
+  An alert is sent. The pipeline is not halted — Silver remains valid 
+  and other Gold tables are unaffected.
+- **Critical failure during rollback**: if the rollback itself fails 
+  after a dbt failure, Gold tables may be in an inconsistent state. 
+  An alert is sent with a clear indication that manual intervention 
+  is required. The job exits without retry to avoid aggravating the 
+  inconsistency.
+- **Idempotence**: naturally guaranteed by the nature of dbt 
+  aggregation models — replaying a dbt run always produces the same result.
 
-**DLQ design — Bronze → Silver only**  
-The DLQ is scoped to the Bronze → Silver transformation — the only stage 
-where logic failures can cause data loss or Silver corruption if not handled.
+**Bronze as the dead letter queue**  
+The Bronze layer serves a dual purpose: transit zone for incoming 
+batches, and implicit dead letter queue for failed transformations. 
+A batch remains in Bronze until its Silver transformation is confirmed 
+successful — at which point it is deleted. If the transformation fails, 
+the batch stays in Bronze indefinitely until the circuit breaker is 
+reset and the pipeline resumes. This design guarantees no batch is 
+ever lost, without requiring a separate DLQ infrastructure.
 
-Failure granularity is at batch level. The business case is built on 
-long-term trend analysis — the BI layer is not time-sensitive to the 
-point where partial monthly updates would bring meaningful value. 
-Even at higher pipeline frequencies, partial batch processing would 
-only make sense if the number of failing lines were small enough to 
-produce a meaningful partial snapshot — which is unlikely to be 
-consistently the case. Batch-level granularity is therefore the 
-right tradeoff, and a full batch reprocess (~36,500 rows at monthly 
-frequency) is acceptable in compute and storage.
+**Circuit breaker**  
+The circuit breaker is a flag stored in the pipeline state file on 
+a Unity Catalog Volume. When set, the Bronze → Silver job exits 
+immediately at startup without processing any batch. The flag is reset 
+exclusively via a dedicated GitHub Actions manual trigger, which calls 
+a reset job via the Databricks API. The reset job clears the flag and 
+immediately triggers the Bronze → Silver job — resuming the pipeline 
+without any direct access to Databricks required from the operator.
 
 **Alternatives considered**  
 
 *Schema enforcement at Bronze level:*  
 Would reject any batch with an unexpected schema — simpler to implement 
 but risks losing batches on INSEE schema changes. Rejected in favor of 
-schema evolution — no batch is worth losing over a schema change that 
-the DLQ can handle downstream.
+schema evolution at Bronze — no batch is worth losing over a schema 
+change that the transformation layer can handle downstream.
 
 *Direct Databricks access to reset the circuit breaker:*  
 Rejected — couples the maintenance act to a specific technical skill 
@@ -302,16 +338,21 @@ actually fixes the failing batch. A deliberate human reset signal
 is an acceptable and safer tradeoff.
 
 *Line-level quarantine:*  
-See DLQ design section above.
+Rejected — the business case is built on long-term trend analysis, 
+not time-sensitive reporting. A full batch reprocess is acceptable 
+in both compute and storage terms at monthly frequency. Partial batch 
+processing would only make sense if the number of failing rows were 
+small enough to produce a meaningful partial snapshot, which cannot 
+be guaranteed.
 
-## ADR-007 — Databricks Workflows as the orchestration layer  
+## ADR-007 — Databricks jobs as the orchestration layer
 
 **Context**  
 The pipeline requires an orchestration layer capable of handling:
 - Scheduled monthly ingestion
-- Automatic two-phase retry on transient failures at every stage
-- Circuit breaker pattern halting the pipeline on logic or unexpected 
-  failures, reset exclusively by a human operator
+- Automatic retry on transient failures at the ingestion stage
+- Circuit breaker pattern halting the pipeline on logic failures, 
+  reset exclusively by a human operator
 - Automatic pipeline resumption after a human-triggered reset, 
   without requiring direct access to Databricks
 - Automatic Silver → Gold recalculation on dbt model changes
@@ -337,70 +378,77 @@ platforms outweighs the elegance of Airflow's native sensor pattern
 in this context.
 
 Additionally, Databricks is the imposed platform for this project 
-(see ADR-001). Databricks Workflows is capable of addressing all 
+(see ADR-001). Databricks Jobs is capable of addressing all 
 constraints without sacrificing pipeline quality or functionality — 
 solving the orchestration problem within Databricks alone demonstrates 
 deeper platform proficiency than delegating it to an external tool.
 
-**How constraints are addressed with Databricks Workflows**  
+**How constraints are addressed with Databricks Jobs**  
 
-*Two-phase retry pattern*  
-Every job in every workflow follows the same retry pattern:
-- **Phase 1** (Job X): short retry — X attempts, Y seconds interval
-- **Phase 2** (Job Xa): long retry — unlimited attempts, Z hours 
-  interval + alert
+*Retry strategy*  
+Only the ingestion stage (API → Bronze) is subject to transient failures, 
+as it depends on an external API (INSEE SIRENE). All downstream stages 
+(Bronze → Silver, Silver → Gold) operate exclusively within Unity Catalog 
+and have no external dependencies — transient failures are not a concern 
+at these stages.
 
-This pattern is implemented via Databricks Workflows conditional task 
-execution — Job Xa is triggered `on failure` of Job X after max retries 
-are reached. Job X and Job Xa run the same code with different retry 
-configurations.
+The ingestion workflow therefore implements a two-phase retry pattern:
+- **Phase 1**: short retry — limited attempts, short interval. 
+  Covers brief API outages or transient network issues.
+- **Phase 2**: long retry — unlimited attempts, one-hour interval + alert. 
+  Covers extended API unavailability (e.g. INSEE maintenance windows).
+
+Phase 2 is triggered on failure of Phase 1 via Databricks Jobs 
+conditional task execution. Both phases run the same job code — 
+the retry behavior is configured at the job level, not in the code.
+
+Bronze → Silver and Silver → Gold jobs use no retry — any failure 
+is a logic or unexpected failure that requires human investigation, 
+not automatic retry.
 
 *Circuit breaker*  
 The pipeline halt mechanism is implemented via a flag in the pipeline 
-state store. When set, all Bronze → Silver workflow runs exit immediately 
-at startup — no transformation is attempted. The flag is reset exclusively 
-via a dedicated GitHub Action triggered manually by the operator, which 
-calls a reset job via the Databricks API (see ADR-006).
+state file stored on a Unity Catalog Volume. When set, the Bronze → 
+Silver job exits immediately at startup — no transformation is attempted. 
+The flag is reset exclusively via a dedicated GitHub Actions manual 
+trigger, which calls a reset job via the Databricks SDK. The reset job 
+clears the flag and immediately triggers the Bronze → Silver job, 
+resuming the pipeline without any direct Databricks access required 
+from the operator.
 
-*Granular state tracking in Bronze → Silver*
-The Bronze → Silver transformation sequence (write Silver, check data 
-integrity, delete Bronze batch) cannot be guaranteed atomic across three 
-distinct operations. In case of UnexpectedFailure mid-sequence, the pipeline 
-state store records the current stage for each batch being processed — 
-allowing the operator to determine precisely whether a manual Silver 
-rollback is needed or whether a simple pipeline restart is safe.
-
-*Inter-workflow triggering*  
-Workflows are fully decoupled — each workflow is triggered independently:
-- Ingestion → Bronze : triggered by monthly scheduler
-- Bronze → Silver : triggered by Ingestion → Bronze Job 1 on success, 
-  or by the GitHub Actions reset job on circuit breaker reset
-- Silver → Gold : triggered by Bronze → Silver Job 2 on success + 
-  empty ingestion queue, or by GitHub Actions webhook on dbt model changes
+*Inter-job triggering*  
+Jobs are fully decoupled — each job is triggered independently:
+- Ingestion → Bronze: triggered by monthly scheduler (10th of each month)
+- Bronze → Silver: triggered by the ingestion job on success, or by 
+  the GitHub Actions reset job on circuit breaker reset
+- Silver → Gold: triggered by the Bronze → Silver job on success, or 
+  by a GitHub Actions webhook on push to dbt model files
 
 *Silver → Gold recalculation*  
-A push to Gold transformation files in the repository triggers an 
-automatic call to the Silver → Gold workflow via a GitHub Actions webhook, 
-without requiring any human access to Databricks.
+A push to dbt model files in the repository triggers an automatic call 
+to the Silver → Gold job via a GitHub Actions webhook, without 
+requiring any human access to Databricks.
 
-**Workflow and job structure**  
-![Workflow diagram](./docs/workflow_architecture.png)  
-*(see pipeline job logic section below for job-level implementation)*  
+**Job and task structure**  
+![Job diagram](./docs/job_architecture.png)  
+*(see pipeline taks logic section below for task-level implementation)*  
 
   
-**Pipeline job logic**  
+**Pipeline task logic**  
 ═══════════════════════════════════════════════════════  
-WORKFLOW : INGESTION → BRONZE  
+JOB : INGESTION → BRONZE  
 ═══════════════════════════════════════════════════════  
 
-JOB IB-1 [short retry: X attempts, Y seconds interval]  
-JOB IB-1a [long retry: unlimited, Z hours interval + alert]  
+TASK IB-1 [Phase 1 — short retry: 10 attempts, 30 seconds interval]  
+TASK IB-1a [Phase 2 — unlimited retry, 1 hour interval + alert]  
 ───────────────────────────────────────────────────────  
 ```
 try:  
-    Fetch API data filtered on last successful run date  
+    If Silver table does not exist:
+      Run first_fetch initialization
+    Fetch API data filtered on last delta cursor date  
     Write to Bronze — MERGE on siret + batch_date for idempotence  
-    Trigger Bronze→Silver Workflow  
+    Trigger Bronze→Silver Job  
 
 except TransientFailure:  
     raise  → triggers retry  
@@ -411,77 +459,62 @@ except UnexpectedFailure:
 ```
 
 ═══════════════════════════════════════════════════════  
-WORKFLOW : BRONZE → SILVER  
+JOB : BRONZE → SILVER  
 ═══════════════════════════════════════════════════════  
 
-JOB BS-1 [short retry: X attempts, Y seconds interval]  
-JOB BS-1a [long retry: unlimited, Z hours interval + alert]  
+TASK BS-1 [no retry] 
 ───────────────────────────────────────────────────────  
 ```
 try:
     If pipeline is halted → exit 0
 
     For each batch in Bronze ingestion queue, ordered chronologically:
-        Record stage = "processing" in pipeline state store
-        Capture current Silver version for potential rollback
+        Build to_merge DataFrame:
+          Load all Silver rows for affected sirets
+          Apply significance filter — detect changes on tracked columns
+          Apply fixed column updates across all periods
+          Close open Silver rows where significant change detected
+          Insert new open rows for changed sirets
+          Insert rows for new sirets
 
-        Transform batch — UPDATE open records + INSERT new records
-        Write to Silver
-        Record stage = "written" in pipeline state store
+        Run integrity checks on to_merge
+        If integrity check fails:
+          Set pipeline halted
+          Send alert
+          exit 0
 
-        Check data integrity on Silver
+        Merge to_merge into Silver (single atomic Delta MERGE)
+        Delete processed Bronze batch
 
-        If integrity check FAILS:
-            Restore Silver to captured version
-            Set pipeline halted
-            Send alert with integrity report
-            exit 0
-
-        Record stage = "checked" in pipeline state store
-        Delete processed Bronze batch from ingestion queue
-        Record stage = "deleted" in pipeline state store
-
-    Trigger Silver→Gold Workflow
-
-except TransientFailure:
-    raise  → triggers retry
+    Trigger Silver→Gold Job
 
 except LogicFailure | UnexpectedFailure:
     Set pipeline halted
-    Send alert — include current stage from pipeline state store 
-                 to indicate whether manual Silver rollback is needed
+    Send alert
     exit 0
 ```
 
 ═══════════════════════════════════════════════════════  
-WORKFLOW : SILVER → GOLD  
+JOB : SILVER → GOLD  
 ═══════════════════════════════════════════════════════  
 
-JOB SG-1 [short retry: X attempts, Y seconds interval]  
-JOB SG-1a [long retry: unlimited, Z hours interval + alert]  
+TASK SG-1 [no retry]  
 ───────────────────────────────────────────────────────  
 ```
 try:
     Capture current Gold versions for potential rollback
-    Record stage = "captured" in pipeline state store
 
-    Run dbt build (run + test per model)
+    Run dbt build  
     Record stage = "built" in pipeline state store
 
-    If dbt result contains failures:
-        Restore failed Gold tables to captured versions
-        Record stage = "restored" in pipeline state store
-        Send alert with dbt failure report
-        exit 0
-
-except TransientFailure:
-    raise  → triggers retry
+    If dbt failures:
+      Restore failed Gold tables to captured versions
+      Send alert with dbt failure report
+      exit 0
 
 except UnexpectedFailure:
-    Set pipeline halted
-    Send critical alert — include current stage from pipeline state store
-                         to indicate whether manual Gold rollback is needed
-    exit 0  
+    Send critical alert — manual Gold intervention required
+    exit 0
 ```
 
 ## ADR-008 — Python modular scripts over notebooks  
@@ -529,3 +562,186 @@ navigate, extend, and debug than a collection of notebooks.
 - Interactive data exploration and prototyping
 - Debugging pipeline issues interactively on live data
 - Setup and onboarding documentation (e.g. `docs/setup_cluster.ipynb`)
+
+## ADR-T — Technical implementation decisions
+
+This ADR documents technical decisions made during implementation that 
+are too granular for the architecture-level ADRs, but important enough 
+to record for future maintainability and debugging.
+
+---
+
+### T-001 — start_at derivation logic
+
+**Decision**  
+The `start_at` of a Silver period is derived differently depending on 
+the source of the period change:
+
+- For periods sourced from the INSEE historical stock file 
+  (multi-period establishments at initialization): `start_at = dateDebut`
+- For single-period establishments at initialization: 
+  `start_at = GREATEST(dateDebut, dateDernierTraitementEtablissement)`
+- For monthly delta batches where only non-INSEE-historized columns 
+  changed: `start_at = dateDernierTraitementEtablissement`
+- For monthly delta batches where INSEE-historized columns changed 
+  (with or without non-historized column changes): 
+  `start_at = dateDebut` of the new INSEE period
+
+**Rationale**  
+`dateDebut` is updated when a field tracked by INSEE's own historization 
+changes. `dateDernierTraitementEtablissement` is updated when a 
+non-historized field changes. Taking the greatest of the two at 
+initialization captures the most precise start date regardless of 
+which field triggered the last change. For monthly deltas, `dateDebut` 
+takes precedence when an INSEE-historized change is detected, as it 
+represents the exact date the new state became effective according to INSEE.
+
+---
+
+### T-002 — end_at derivation logic
+
+**Decision**  
+The `end_at` of a Silver period being closed is derived as follows:
+
+- For periods already closed in the INSEE historical stock file at 
+  initialization: `end_at = dateFin` from the historical file
+- For a period closed during a monthly delta due to a change in 
+  non-INSEE-historized columns only: `end_at = dateDernierTraitementEtablissement`
+- For a period closed during a monthly delta due to a change in 
+  INSEE-historized columns (with or without non-historized changes): 
+  `end_at = dateDebut` of the new INSEE period
+
+**Rationale**  
+When a non-historized column changes, the only available date reference 
+is `dateDernierTraitementEtablissement` — INSEE does not provide a 
+precise change date for these fields. When an INSEE-historized column 
+changes, `dateDebut` of the new period is the exact date the previous 
+state ended according to INSEE, and is therefore more precise.
+
+---
+
+### T-003 — Rétroactive modification assumption
+
+**Decision**  
+The pipeline assumes INSEE does not make retroactive modifications to 
+`dateDernierTraitementEtablissement` for records already processed. 
+The delta cursor is therefore set to the maximum last treatment date 
+observed in the previous batch, offset by one second.
+
+**Rationale**  
+There is no reliable way to detect retroactive modifications without 
+performing a full reload — which defeats the purpose of incremental 
+ingestion. This assumption is documented and accepted. If INSEE performs 
+a large-scale retroactive correction, the pipeline operator would need 
+to perform a manual reinitialization. In practice, INSEE publishes 
+corrections as new records with updated treatment dates, not as silent 
+retroactive overwrites.
+
+---
+
+### T-004 — Single atomic MERGE as the Silver write pattern
+
+**Decision**  
+All Silver changes for a given batch — closing existing periods, 
+inserting new periods, updating fixed columns across all historical 
+rows — are applied in a single Delta MERGE operation. The full target 
+state is constructed as an in-memory DataFrame before any write occurs.
+
+**Rationale**  
+Delta Lake does not guarantee atomicity across multiple statements. 
+A sequence of UPDATE + INSERT + UPDATE could leave Silver in an 
+inconsistent state if the job fails mid-sequence. A single MERGE 
+is atomic by definition — either all changes are committed or none are. 
+This eliminates the need for rollback logic at the Silver level.
+
+---
+
+### T-005 — Date capping at initialization
+
+**Decision**  
+During `first_fetch`, all period start and end dates are capped at 
+the maximum `dateDernierTraitementEtablissement` found in the stock file.
+
+**Rationale**  
+INSEE may record periods with future `dateDebut` or `dateFin` values 
+(e.g. anticipated nomenclature changes already registered in the system). 
+A future `start_at` in Silver would cause `new_end_at < start_at` 
+during the next monthly batch, producing an integrity check failure. 
+Capping at the maximum known treatment date prevents this without 
+discarding the affected records.
+
+---
+
+### T-006 — Fixed columns are not truly immutable
+
+**Decision**  
+Columns initially classified as immutable (postal code, commune code, 
+commune label, Lambert coordinates) are treated as updateable across 
+all historical Silver rows when a change is detected in a monthly batch.
+
+**Rationale**  
+During implementation, 2,032 cases of changes on these columns were 
+observed in a single monthly batch. Likely causes include administrative 
+commune mergers, INSEE address corrections, and coordinate recalculations. 
+When a change is detected, it is applied to all historical Silver rows 
+for the affected establishment — the assumption being that the correction 
+applies retroactively to the entire history of the establishment's location.
+
+---
+
+### T-007 — Delta cursor offset by one second
+
+**Decision**  
+The delta cursor stored in the pipeline state is set to 
+`MAX(dateDernierTraitementEtablissement) + 1 second` at the end of 
+each successful batch.
+
+**Rationale**  
+Using the exact maximum date without offset would re-fetch the 
+establishment with that exact treatment date on the next run, 
+producing a non-empty batch even when no new changes have occurred. 
+A one-second offset ensures the filter is strictly greater than the 
+last processed date.
+
+---
+
+### T-008 — Significance filter on tracked columns
+
+**Decision**  
+A batch record triggers a new Silver period only if at least one column 
+in the set of project-tracked historized columns has changed compared 
+to the current open Silver row for that establishment.
+
+**Rationale**  
+INSEE updates `dateDernierTraitementEtablissement` for both business 
+changes and purely technical modifications (nomenclature recodings, 
+internal system updates) with no business impact. Without a significance 
+filter, every such technical update would generate a new Silver period — 
+inflating the table with meaningless rows and distorting trend analysis. 
+Only changes on columns that carry business meaning for the project 
+trigger a new period.
+
+---
+
+### T-009 — activitePrincipaleNAF25Etablissement follows activitePrincipaleEtablissement
+
+**Decision**  
+`activitePrincipaleNAF25Etablissement` (APE code in NAF2025 nomenclature) 
+is treated as a project-historized column that follows 
+`activitePrincipaleEtablissement` — meaning a change in either column 
+triggers a new Silver period.
+
+**Rationale**  
+`activitePrincipaleNAF25Etablissement` is not historized by INSEE 
+(no `dateDebut`/`dateFin` provided) and is not present in the historical 
+stock file. It is a recodage of `activitePrincipaleEtablissement` into 
+a newer nomenclature. In practice, both columns change together when 
+the establishment's main activity changes. Treating `activitePrincipaleNAF25Etablissement` 
+as a project-historized column ensures the NAF2025 code is always 
+consistent with the APE code within each Silver period.
+
+The known risk is that a mass INSEE recodage of NAF2025 codes — 
+without any underlying business change — would generate spurious new 
+Silver periods for all affected establishments. This risk is accepted 
+and documented. INSEE publishes nomenclature changes in advance, 
+allowing the operator to anticipate and handle them if needed.

@@ -1,8 +1,13 @@
 from pyspark.sql.types import StructType, StructField, StringType, BooleanType, DateType, TimestampType, DoubleType
+from dotenv import load_dotenv
+import os
+from pathlib import Path
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+DATABRICKS_USER = os.environ["DATABRICKS_USER"]
+DBT_PROJECT_DIR = f"/Workspace/Users/{DATABRICKS_USER}/insee-sirene-monitor/dbt"
 
 DATABRICKS_SCOPE = "databricks-credentials"
-BRONZE_SILVER_WORKFLOW_ID = 0
-SILVER_GOLD_WORKFLOW_ID = 0
 
 INSEE_API_SCOPE = "insee-sirene-monitor-api-credentials"
 INSEE_API_ENDPOINT = "https://api.insee.fr/api-sirene/3.11/siret"
@@ -28,7 +33,8 @@ BRONZE_TABLE = "sirene.bronze"
 SILVER_TABLE = "sirene.silver"
 GOLD_TABLES = [
     "sirene.gold_sector_trends",
-    "sirene.gold_regional_activity"
+    "sirene.gold_regional_activity",
+    "sirene.gold_active_establishments"
 ]
 
 SIRENE_COLUMNS = {
@@ -37,42 +43,42 @@ SIRENE_COLUMNS = {
         "comment": "Identifiant unique de l'établissement",
         "insee_historized": None,
         "project_historized": False,
-        "source": True, # True = présent dans le CSV source ; False = construit par le pipeline
+        "source": True, # True = in the csv source file ; False = engineered by the pipeline
     },
     "dateCreationEtablissement": {
         "field": StructField("dateCreationEtablissement", DateType(), True),
         "comment": "Date de création de l'établissement",
         "insee_historized": None,
         "project_historized": False,
-        "source": True, # True = présent dans le CSV source ; False = construit par le pipeline
+        "source": True, # True = in the csv source file ; False = engineered by the pipeline
     },
     "etatAdministratifEtablissement": {
         "field": StructField("etatAdministratifEtablissement", StringType(), True),
         "comment": "Etat administratif de l'établissement (A=Actif, F=Fermé)",
         "insee_historized": True,
         "project_historized": True,
-        "source": True, # True = présent dans le CSV source ; False = construit par le pipeline
+        "source": True, # True = in the csv source file ; False = engineered by the pipeline
     },
     "activitePrincipaleEtablissement": {
         "field": StructField("activitePrincipaleEtablissement", StringType(), True),
         "comment": "Code APE en nomenclature NAFRev2",
         "insee_historized": True,
         "project_historized": True,
-        "source": True, # True = présent dans le CSV source ; False = construit par le pipeline
+        "source": True, # True = in the csv source file ; False = engineered by the pipeline
     },
     "activitePrincipaleNAF25Etablissement": {
         "field": StructField("activitePrincipaleNAF25Etablissement", StringType(), True),
         "comment": "Code APE en nomenclature NAF25 - suit les changements de activitePrincipaleEtablissement",
         "insee_historized": False,
         "project_historized": True,
-        "source": True, # True = présent dans le CSV source ; False = construit par le pipeline
+        "source": True, # True = in the csv source file ; False = engineered by the pipeline
     },
     "caractereEmployeurEtablissement": {
         "field": StructField("caractereEmployeurEtablissement", StringType(), True),
         "comment": "Caractère employeur de l'établissement (O=Oui, N=Non)",
         "insee_historized": True,
         "project_historized": True,
-        "source": True, # True = présent dans le CSV source ; False = construit par le pipeline
+        "source": True, # True = in the csv source file ; False = engineered by the pipeline
     },
     "trancheEffectifsEtablissement": {
         "field": StructField("trancheEffectifsEtablissement", StringType(), True),

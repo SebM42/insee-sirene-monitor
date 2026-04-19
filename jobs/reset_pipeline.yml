@@ -1,0 +1,15 @@
+name: reset-pipeline
+environments:
+  - environment_key: default
+    spec:
+      client: "1"
+      dependencies:
+        - "{{secrets/databricks-credentials/project-path}}"
+tasks:
+  - task_key: reset_pipeline
+    environment_key: default
+    spark_python_task:
+      python_file: tasks/task_bronze_to_silver.py
+    email_notifications:
+      on_failure:
+        - "{{secrets/databricks-credentials/alert-email}}"

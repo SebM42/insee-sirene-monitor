@@ -1,0 +1,18 @@
+name: bronze-silver
+environments:
+  - environment_key: default
+    spec:
+      client: "1"
+      dependencies:
+        - "{{secrets/databricks-credentials/project-path}}"
+tasks:
+  - task_key: bronze_to_silver
+    environment_key: default
+    spark_python_task:
+      python_file: tasks/task_bronze_to_silver.py
+    retry_on_timeout: true
+    max_retries: 0
+    timeout_seconds: 3600
+    email_notifications:
+      on_failure:
+        - "{{secrets/databricks-credentials/alert-email}}"

@@ -1,0 +1,16 @@
+name: 'insee_sirene_monitor'
+version: '1.0.0'
+config-version: 2
+
+profile: 'insee_sirene_monitor'
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  insee_sirene_monitor:
+    gold:
+      +materialized: table

@@ -1,0 +1,17 @@
+name: Retrigger Silver to Gold
+on:
+  push:
+    paths:
+      - 'dbt/**'
+
+jobs:
+  retrigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Silver to Gold workflow
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"job_id": ${{ secrets.SILVER_GOLD_WORKFLOW_ID }}}' \
+            ${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/run-now

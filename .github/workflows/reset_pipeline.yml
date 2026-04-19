@@ -1,0 +1,15 @@
+name: Reset Pipeline Circuit Breaker
+on:
+  workflow_dispatch:  # manual trigger only
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger reset pipeline job
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"job_id": ${{ secrets.RESET_PIPELINE_JOB_ID }}}' \
+            ${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/run-now

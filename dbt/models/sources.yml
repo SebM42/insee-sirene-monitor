@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: sirene
+    catalog: workspace
+    schema: sirene
+    tables:
+      - name: silver
+        description: "Table Silver SCD2 — historique des établissements AURA"

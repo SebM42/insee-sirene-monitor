@@ -3,6 +3,11 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
 # C extensions
 *.so
 

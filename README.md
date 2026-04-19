@@ -51,10 +51,9 @@ Geographic scope: Auvergne-Rhône-Alpes (12 departments).
 - **Transformation failures**: circuit breaker halts the pipeline, reset via GitHub Actions manual trigger
 - **Gold failures**: automatic rollback via Delta time travel, email alert
 
-## Cluster Setup
+## Project Setup
 
-See [docs/setup_cluster.ipynb](docs/setup_cluster.ipynb) for full 
-setup instructions.
+See [docs/setup_project.ipynb](docs/setup_project.ipynb) for full setup instructions.
 
 ## Project structure
 ```

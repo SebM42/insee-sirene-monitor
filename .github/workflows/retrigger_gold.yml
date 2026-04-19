@@ -13,5 +13,5 @@ jobs:
           curl -X POST \
             -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d '{"job_id": ${{ secrets.SILVER_GOLD_WORKFLOW_ID }}}' \
+            -d '{"job_id": ${{ secrets.SILVER_GOLD_JOB_ID }}}' \
             ${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/run-now

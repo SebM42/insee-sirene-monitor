@@ -11,7 +11,8 @@ dependencies = [
     "requests",
     "python-dotenv",
     "dbt-databricks",
-    "databricks-sdk"
+    "databricks-sdk",
+    "pynacl"
 ]
 
 [tool.setuptools.packages.find]

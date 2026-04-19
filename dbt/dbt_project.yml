@@ -4,6 +4,7 @@ config-version: 2
 
 profile: 'insee_sirene_monitor'
 
+
 model-paths: ["models"]
 target-path: "target"
 clean-targets:
@@ -14,3 +15,4 @@ models:
   insee_sirene_monitor:
     gold:
       +materialized: table
+

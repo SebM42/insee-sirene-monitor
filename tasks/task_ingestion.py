@@ -24,8 +24,11 @@ def main(dbutils) -> None:
 
     spark = get_spark()
     batch_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    if not DeltaTable.isDeltaTable(spark, SILVER_TABLE):
+    
+    silver_exists = spark.catalog.tableExists(SILVER_TABLE)
+    if not silver_exists:
         run_first_fetch(batch_date)
+    
     run_fetch(dbutils, batch_date)
     trigger_bronze_silver(dbutils)
 

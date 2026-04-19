@@ -21,6 +21,8 @@ def main(dbutils) -> None:
         print("Pipeline is halted, skipping Bronze→Silver.", flush=True)
         return
     run_bronze_to_silver()
+    if is_pipeline_halted():
+        return
     trigger_silver_gold(dbutils)
 
 

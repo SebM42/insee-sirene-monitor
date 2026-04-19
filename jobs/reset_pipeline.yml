@@ -12,4 +12,4 @@ tasks:
       python_file: tasks/task_bronze_to_silver.py
     email_notifications:
       on_failure:
-        - "{{secrets/databricks-credentials/alert-email}}"
+        - "{{alert_email}}"

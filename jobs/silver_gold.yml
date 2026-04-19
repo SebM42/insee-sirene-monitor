@@ -15,4 +15,4 @@ tasks:
     timeout_seconds: 3600
     email_notifications:
       on_failure:
-        - "{{secrets/databricks-credentials/alert-email}}"
+        - "{{alert_email}}"

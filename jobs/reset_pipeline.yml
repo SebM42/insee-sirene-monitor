@@ -2,9 +2,9 @@ name: reset-pipeline
 environments:
   - environment_key: default
     spec:
-      client: "1"
+      client: "2"
       dependencies:
-        - "{{secrets/databricks-credentials/project-path}}"
+        - "{{project_path}}"
 tasks:
   - task_key: reset_pipeline
     environment_key: default

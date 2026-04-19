@@ -2,9 +2,9 @@ name: silver-gold
 environments:
   - environment_key: default
     spec:
-      client: "1"
+      client: "2"
       dependencies:
-        - "{{secrets/databricks-credentials/project-path}}"
+        - "{{project_path}}"
 tasks:
   - task_key: silver_to_gold
     environment_key: default

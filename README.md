@@ -45,6 +45,10 @@ Geographic scope: Auvergne-Rhône-Alpes (12 departments).
 - **Monthly run** (`fetch` + `bronze_to_silver`): fetches delta from INSEE API, writes to Bronze, transforms to Silver via atomic Delta MERGE.
 - **Gold refresh** (`silver_to_gold`): triggered automatically after each Silver update, or on push to dbt model files.
 
+## Job architecture
+
+![Job Architecture](./docs/job_architecture.png)
+
 ## Failure handling
 
 - **Ingestion failures**: two-phase retry (short + long) with email alert

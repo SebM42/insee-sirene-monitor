@@ -1,15 +1,24 @@
 # insee-sirene-monitor
 
-End-to-end data pipeline on French business registry data (SIRENE/INSEE) for economic activity monitoring in the Auvergne-Rhône-Alpes region.
+End-to-end data pipeline on French business registry data (SIRENE/INSEE) for economic activity monitoring in a custom region.
 
 ## Overview
 
 This pipeline ingests monthly updates from the SIRENE API, historizes establishment data using a SCD Type 2 pattern, and produces business-ready aggregations for trend analysis. It is designed as a portfolio project demonstrating proficiency with the dominant tools in the data engineering market.
 
 **Business questions addressed:**
-- Is a given sector growing or declining in the AURA region?
+- Is a given sector growing or declining in the custom region?
 - Have business creations in a specific industry slowed since a given date?
 - Which departments are the most economically dynamic for a given sector?
+
+## Customization
+
+The pipeline is designed to be highly configurable from a single config file:
+
+- **Geographic scope** — any region can be targeted by updating a department list
+- **Tracked columns** — each source column is individually configured as project-historized (triggers a new SCD2 period on change), fixed (updated retroactively across all historical rows), or ignored. Adding a new column to Silver tracking is a single config entry — the pipeline adapts automatically.
+- **Historization strategy** — the distinction between project-historized and fixed columns allows fine-grained control over what constitutes a "meaningful change" vs a data correction, without touching the transformation logic
+- **Gold models** — dbt models are independent and can be added, removed, or modified without touching the ingestion or transformation logic
 
 ## Stack
 

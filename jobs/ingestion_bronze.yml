@@ -1,6 +1,6 @@
 name: ingestion-bronze
 schedule:
-  quartz_cron_expression: "0 0 10 * * ?"  # 10th of each month at midnight
+  quartz_cron_expression: "0 0 0 10 * ?"  # 10th of each month at midnight
   timezone_id: "Europe/Paris"
 
 environments:
